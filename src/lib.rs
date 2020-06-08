@@ -1,20 +1,44 @@
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
-use serde::Serialize;
+use serde::ser::SerializeSeq;
+use serde::{Serialize, Serializer};
 
 #[derive(Serialize)]
 pub struct Parser {
-    pub headers: Arena,
     pub options: Vec<Options>,
+    pub headers: Arena,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Arena {
     nodes: Vec<Node>,
 }
 
-#[derive(Debug, Serialize)]
+impl Serialize for Arena {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // In the end we want to output:
+        /* [
+            {
+                level: u32,
+                title: str,
+                text: [
+                    "some line",
+                    "some other line",
+                    "some third line"
+                ],
+            }
+        ]
+        */
+        let mut seq = serializer.serialize_seq(Some(self.nodes.len()))?;
+        for node in self.nodes.iter() {
+            seq.serialize_element(&node.data)?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Debug)]
 pub struct Node {
     parent: Option<NodeId>,
     previous_sibling: Option<NodeId>,
