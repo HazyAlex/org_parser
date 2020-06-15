@@ -79,7 +79,7 @@ impl Serialize for Node {
 
         header.serialize_field("parent", &self.parent.map(|node| node.index))?;
         header.serialize_field("previous", &self.previous_sibling.map(|node| node.index))?;
-        header.serialize_field("next", &self.previous_sibling.map(|node| node.index))?;
+        header.serialize_field("next", &self.next_sibling.map(|node| node.index))?;
         header.serialize_field("children", &self.children)?;
 
         header.end()

@@ -42,7 +42,7 @@ Some text
             "LOW",
             "CRITICAL"
           ]
-    },
+        },
         {
           "DONE": [
             "DONE"
@@ -62,7 +62,7 @@ Some text
       },
       "parent": null,
       "previous": null,
-      "next": null,
+      "next": 5,
       "children": [
         {
           "index": 1
@@ -108,7 +108,7 @@ Some text
       },
       "parent": 1,
       "previous": null,
-      "next": null,
+      "next": 3,
       "children": []
     },
     {
@@ -121,7 +121,7 @@ Some text
       },
       "parent": 1,
       "previous": 2,
-      "next": 2,
+      "next": 4,
       "children": []
     },
     {
@@ -136,7 +136,7 @@ Some text
       },
       "parent": 1,
       "previous": 3,
-      "next": 3,
+      "next": null,
       "children": []
     },
     {
@@ -152,7 +152,7 @@ Some text
       },
       "parent": null,
       "previous": 0,
-      "next": 0,
+      "next": null,
       "children": []
     }
   ]
