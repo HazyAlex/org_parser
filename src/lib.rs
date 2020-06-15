@@ -1,15 +1,33 @@
-use serde::ser::SerializeSeq;
+use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Serialize, Serializer};
 
 #[derive(Serialize)]
 pub struct Parser {
-    pub options: Vec<Options>,
-    pub headers: Arena,
+    options: Vec<Options>,
+    headers: Arena,
 }
 
 #[derive(Debug)]
 pub struct Arena {
     nodes: Vec<Node>,
+}
+
+impl Arena {
+    pub fn new_node(&mut self, data: Header) -> NodeId {
+        let next_index = self.nodes.len();
+
+        self.nodes.push(Node {
+            parent: None,
+            children: Vec::new(),
+            previous_sibling: None,
+            next_sibling: None,
+            index: next_index,
+            data, // Title, Text, Level
+        });
+
+        // Return the node identifier
+        NodeId { index: next_index }
+    }
 }
 
 impl Serialize for Arena {
@@ -31,8 +49,8 @@ impl Serialize for Arena {
         ]
         */
         let mut seq = serializer.serialize_seq(Some(self.nodes.len()))?;
-        for node in self.nodes.iter() {
-            seq.serialize_element(&node.data)?;
+        for node in &self.nodes {
+            seq.serialize_element(&node)?;
         }
         seq.end()
     }
@@ -44,8 +62,28 @@ pub struct Node {
     previous_sibling: Option<NodeId>,
     next_sibling: Option<NodeId>,
     children: Vec<NodeId>,
+    index: usize,
 
     pub data: Header,
+}
+
+impl Serialize for Node {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut header = serializer.serialize_struct("Header", 6)?;
+
+        header.serialize_field("index", &self.index)?;
+        header.serialize_field("data", &self.data)?;
+
+        header.serialize_field("parent", &self.parent.map(|node| node.index))?;
+        header.serialize_field("previous", &self.previous_sibling.map(|node| node.index))?;
+        header.serialize_field("next", &self.previous_sibling.map(|node| node.index))?;
+        header.serialize_field("children", &self.children)?;
+
+        header.end()
+    }
 }
 
 #[derive(Debug, Copy, Clone, Serialize)]
@@ -55,13 +93,14 @@ pub struct NodeId {
 
 #[derive(Debug, Serialize)]
 pub struct Header {
-    level: u32,
+    level: usize,
     title: String,
     text: Vec<String>,
+    state: Option<String>,
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub enum Options {
     SEQ_TODO(Vec<SEQ_STATES>),
     // Author
@@ -69,14 +108,50 @@ pub enum Options {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, Serialize)]
+type TODO_KEYWORDS = Vec<String>;
+#[allow(non_camel_case_types)]
+type DONE_KEYWORDS = Vec<String>;
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Serialize, PartialEq)]
 pub enum SEQ_STATES {
     TODO(Vec<String>),
     DONE(Vec<String>),
 }
 
 impl Parser {
-    pub fn parse(data: String) -> Self {
+    pub fn parse(data: &String) -> Self {
+        let options = Self::parse_options(&data);
+        let states = Self::get_states(&options);
+        let headers = Self::parse_headers(&data, states);
+
+        Self { options, headers }
+    }
+
+    pub fn print_json(&self, output: &String) -> Result<(), std::io::Error> {
+        let contents = serde_json::to_string(&self)?;
+        std::fs::write(output, contents)
+    }
+
+    pub fn print_json_pretty(&self, output: &String) -> Result<(), std::io::Error> {
+        let contents = serde_json::to_string_pretty(&self)?;
+        std::fs::write(output, contents)
+    }
+
+    fn count_level(line: &str) -> usize {
+        let mut header_level = 0;
+        for star in line.chars() {
+            if star == '*' {
+                header_level += 1;
+            } else {
+                break;
+            }
+        }
+
+        header_level
+    }
+
+    fn parse_options(data: &String) -> Vec<Options> {
         // Options
         let mut seq_options: Vec<SEQ_STATES> = Vec::with_capacity(2);
 
@@ -97,10 +172,17 @@ impl Parser {
                         continue;
                     }
 
-                    if todo {
-                        seq_todo_options.push(option.to_string());
+                    // DONE(d) => DONE, CRITICAL(c) => CRITICAL, ...
+                    let option = if option.contains('(') && option.contains(')') {
+                        option.split('(').next().unwrap().to_string()
                     } else {
-                        seq_done_options.push(option.to_string());
+                        option.to_string()
+                    };
+
+                    if todo {
+                        seq_todo_options.push(option);
+                    } else {
+                        seq_done_options.push(option);
                     }
                 }
 
@@ -114,25 +196,95 @@ impl Parser {
 
         let mut options: Vec<Options> = Vec::new();
         options.push(Options::SEQ_TODO(seq_options));
-        let headers = Self::parse_headers(data);
 
-        Self { headers, options }
+        options
     }
 
-    fn count_level(line: &str) -> u32 {
-        let mut header_level = 0;
-        for star in line.chars() {
-            if star == '*' {
-                header_level += 1;
-            } else {
-                break;
+    fn get_states(options: &Vec<Options>) -> (Option<&TODO_KEYWORDS>, Option<&DONE_KEYWORDS>) {
+        // Handle States - TODO | DONE | CUSTOM
+        let mut todo_keywords: Option<&Vec<String>> = None;
+        let mut done_keywords: Option<&Vec<String>> = None;
+
+        for Options::SEQ_TODO(states) in options {
+            for state in states {
+                match state {
+                    SEQ_STATES::TODO(todo) => todo_keywords = Some(todo),
+                    SEQ_STATES::DONE(done) => done_keywords = Some(done),
+                }
             }
         }
 
-        header_level
+        (todo_keywords, done_keywords)
     }
 
-    fn parse_headers(data: String) -> Arena {
+    fn parse_state(
+        line: &str,
+        states: (Option<&TODO_KEYWORDS>, Option<&DONE_KEYWORDS>),
+    ) -> Option<String> {
+        let (todo_keywords, done_keywords) = states;
+        let mut header_state: Option<String>;
+
+        // *** TODO Some Title => TODO
+        let word = line.split_ascii_whitespace().nth(1);
+        if word.is_none() || word.unwrap().is_empty() {
+            return None;
+        }
+
+        let word = word.unwrap();
+
+        match todo_keywords {
+            None => {
+                header_state = Some("TODO".to_string());
+            }
+            Some(keywords) => {
+                header_state = keywords
+                    .iter()
+                    .filter(|keyword| *keyword == word)
+                    .next()
+                    .and_then(|x| Some(x.clone().to_string()));
+            }
+        }
+
+        if header_state.is_some() {
+            return header_state; // Found TODO related header
+        }
+
+        match done_keywords {
+            None => {
+                header_state = Some("DONE".to_string());
+            }
+            Some(keywords) => {
+                header_state = keywords
+                    .iter()
+                    .filter(|keyword| *keyword == word)
+                    .next()
+                    .and_then(|x| Some(x.clone().to_string()));
+            }
+        }
+
+        header_state // Found DONE related header
+    }
+
+    /// Parse the title of a Header, removing the options if they exist
+    fn parse_title(line: &str, header_level: usize, state: &Option<String>) -> String {
+        let title = line.split_at(header_level).1.trim_start().to_string();
+
+        if let Some(keyword) = &state {
+            // Prevent panic on empty titles:
+            if title.len() > keyword.len() {
+                title.split_at(keyword.len() + 1).1.to_string()
+            } else {
+                "".to_string()
+            }
+        } else {
+            title
+        }
+    }
+
+    fn parse_headers(
+        data: &String,
+        options: (Option<&TODO_KEYWORDS>, Option<&DONE_KEYWORDS>),
+    ) -> Arena {
         let mut arena = Arena { nodes: Vec::new() };
 
         let mut current_node: Option<NodeId> = None;
@@ -154,15 +306,15 @@ impl Parser {
 
             // New node
 
-            let new_header_level: u32 = Self::count_level(line);
-            let title = line
-                .split_at(line.find(' ').expect("A header needs a title!") + 1)
-                .1;
+            let new_header_level = Self::count_level(line);
+            let state = Self::parse_state(line, options);
+            let title = Self::parse_title(line, new_header_level, &state);
 
             let data = Header {
                 level: new_header_level,
-                title: title.to_string(),
+                title,
                 text: Vec::new(),
+                state,
             };
 
             let node_id = arena.new_node(data);
@@ -219,32 +371,56 @@ impl Parser {
     }
 }
 
-impl Arena {
-    pub fn new_node(&mut self, data: Header) -> NodeId {
-        let next_index = self.nodes.len();
-
-        self.nodes.push(Node {
-            parent: None,
-            children: Vec::new(),
-            previous_sibling: None,
-            next_sibling: None,
-            data, // Title, Text, Level
-        });
-
-        // Return the node identifier
-        NodeId { index: next_index }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::Options;
     use super::Parser;
+    use super::SEQ_STATES;
 
     #[test]
-    fn count_level() {
+    fn test_count_level() {
         assert_eq!(Parser::count_level("*** H3 Heading"), 3);
         assert_eq!(Parser::count_level("** H2 Heading"), 2);
         assert_eq!(Parser::count_level("* H1 Heading"), 1);
         assert_eq!(Parser::count_level("*** H3 Heading"), 3);
+    }
+
+    #[test]
+    fn test_parse_options_simple() {
+        let options = "#+TODO: TODO(t) | DONE(d)".to_string();
+        let todo = SEQ_STATES::TODO(vec!["TODO".to_string()]);
+        let done = SEQ_STATES::DONE(vec!["DONE".to_string()]);
+
+        let output = Parser::parse_options(&options);
+        assert_eq!(output, [Options::SEQ_TODO(vec![todo, done])]);
+    }
+
+    #[test]
+    fn test_parse_options_complex() {
+        let options = "#+TODO: TODO(t) CRITICAL(c) NOT_DONE(n) | COMPLETED(e) DONE(d)".to_string();
+        let todo = SEQ_STATES::TODO(vec![
+            "TODO".to_string(),
+            "CRITICAL".to_string(),
+            "NOT_DONE".to_string(),
+        ]);
+        let done = SEQ_STATES::DONE(vec!["COMPLETED".to_string(), "DONE".to_string()]);
+
+        let output = Parser::parse_options(&options);
+        assert_eq!(output, [Options::SEQ_TODO(vec![todo, done])]);
+    }
+
+    #[test]
+    fn test_parse_title() {
+        let title = "* Header";
+        assert_eq!("Header", Parser::parse_title(title, 1, &None));
+
+        let title = "*** Some title";
+        assert_eq!("Some title", Parser::parse_title(title, 3, &None));
+
+        let title = "** CUSTOM_TODO test";
+        assert_eq!(
+            "test",
+            Parser::parse_title(title, 2, &Some("CUSTOM_TODO".to_string()))
+        );
     }
 }

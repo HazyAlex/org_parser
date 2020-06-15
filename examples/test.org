@@ -1,14 +1,15 @@
 #+TODO: TODO(t) LOW(l) CRITICAL(c) | DONE(d)
-* Heading 1
-** Heading 2
-*** Heading 3-1
+* TODO Heading 1
+** TODO Heading 2
+*** DONE Heading 3-1
 
 Content:
  * Some line
  * Another
 
 *** Heading 3-2
+*** CRITICAL Heading 3-3
 
-* New H1 header
+* DONE New H1 header
 
 Some text
